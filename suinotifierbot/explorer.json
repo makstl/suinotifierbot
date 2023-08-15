@@ -1,0 +1,16 @@
+[
+  {
+    "id": 0,
+    "name": "suiexplorer.com",
+    "buttonprefix": "suiexplorer",
+    "accounturl": "https://suiexplorer.com/address/{0}?network=mainnet",
+    "opurl": "https://suiexplorer.com/transaction/{0}/?network=mainnet"
+  },
+  {
+    "id": 1,
+    "name": "suiscan.xyz",
+    "buttonprefix": "suiscan",
+    "accounturl": "https://suiscan.xyz/mainnet/account/{0}",
+    "opurl": "https://suiscan.xyz/mainnet/tx/{0}"
+  }
+]
