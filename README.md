@@ -1,4 +1,4 @@
-# SuiNotifierBot - Telegram Sui Blockchain Notification Bot
+# SuiNotifierBot - Telegram Bot for Sui Blockchain Monitoring
 
 Sui Notifier is a Telegram bot written in C# that notifies users about transactions and other relevant events occurring in the Sui blockchain. The bot integrates with the Telegram messaging platform, allowing users to receive real-time notifications on their Telegram accounts.
 
