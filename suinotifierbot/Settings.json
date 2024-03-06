@@ -1,8 +1,0 @@
-{
-	"Telegram": {
-      "BotSecret": "",
-      "AdminChannel": 0,
-      "SupportGroup": 0
-    },
-  "NodeUri": ""
-}

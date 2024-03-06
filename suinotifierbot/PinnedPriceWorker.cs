@@ -35,6 +35,7 @@ namespace SuiNotifierBot
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            await Task.Delay(1000 * 60 * 5, stoppingToken);
             while (stoppingToken.IsCancellationRequested is false)
             {
                 using var scope = _serviceProvider.CreateScope();
@@ -74,15 +75,15 @@ namespace SuiNotifierBot
                                 await db.SaveChangesAsync();
                             }
                         }
-                        await Task.Delay(1000 * 3);
+                        await Task.Delay(1000 * 3, stoppingToken);
+                        if (stoppingToken.IsCancellationRequested)
+                            return;
                     }
                 }
                 catch (Exception e)
                 {
                     _logger.LogError(e, "PinnedPriceWorker failure");
-                }
-
-                await Task.Delay(1000 * 60 * 5);                
+                }            
             }
         }
     }

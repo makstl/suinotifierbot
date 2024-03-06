@@ -58,7 +58,7 @@ namespace SuiNotifierBot
                     logger.LogError(e, e.Message);
                     if (!e.Message.Contains("<h1>504 Gateway Time-out</h1>"))
                         await messageSender.SendAdminMessage("🛑 " + e.GetType().Name + ": " + e.Message);
-                    Thread.Sleep(5000);
+                    await Task.Delay(5000, stoppingToken);
                 }
             }
         }
@@ -97,7 +97,8 @@ namespace SuiNotifierBot
                 cursor = lt.Digest;
                 timestamp = (ulong)lt.Timestamp.Subtract(DateTime.UnixEpoch).TotalMilliseconds;
             }
-            //cursor = "2aSmoo7ZFNMAuDsEd2E5BW3HCoMgkn7F261STPnzNd2S";
+            //Thread.Sleep(1000000);
+            //cursor = "FTdsVZgfwbWMS5hToZvwkDGk7VXcrRjWjrNEyWDUqA7v";// "4fHhXcE2yDMYNtSZ9nQ2jExvDmxJmgzKWn8xYpDqeZCv";
             int count = 0;
             List<dynamic> eventsToProcess = new List<dynamic>();
             for (int i = 0; i < 10; i++)
@@ -119,6 +120,8 @@ namespace SuiNotifierBot
                     await ProcessTx(eventsToProcess, db, rpc);
                     eventsToProcess.Clear();
                 }
+                if (stoppingToken.IsCancellationRequested)
+                    return;
             }
             if (count > 0)
             {
@@ -141,22 +144,25 @@ namespace SuiNotifierBot
             {
                 var tx = (string)ev.digest;
                 List<(string, decimal)> receivers = new List<(string, decimal)>();
-                string? sender = null;
+                string sender = "";
+                decimal amount = 0;
                 foreach (var bc in ev.balanceChanges)
                 {
                     if ((string)bc.coinType != SuiConstants.SuiCoinType)
                         continue;
-                    var amount = ((long)bc.amount).ToString().ParseSui();
+                    amount = ((long)bc.amount).ToString().ParseSui();
                     if (amount > 0)
                         receivers.Add((bc.owner.AddressOwner, amount));
                     else
                         sender = bc.owner.AddressOwner;
                 }
+                if (ev.events == null)
+                    continue;
                 foreach (var e in ev.events)
 				{
                     if (e.type == "0x3::validator::StakingRequestEvent")
 					{
-                        var amount = ((long)e.parsedJson.amount).ToString().ParseSui();
+                        var stakedAmount = ((long)e.parsedJson.amount).ToString().ParseSui();
                         var delegator = (string)e.parsedJson.staker_address;
                         var validator = validators[(string)e.parsedJson.validator_address];
                         var to_addr = db.UserAddress.Include(x => x.User).Where(x => x.Address == validator.Address && x.NotifyDelegations && !x.User.Inactive).ToList();
@@ -166,7 +172,7 @@ namespace SuiNotifierBot
                             if (fromName == null)
                                 fromName = delegator.ShortAddr();
                             string result =
-                                $"🤝 New <a href='{Explorer.FromId(ua.User.Explorer).op(tx)}'>delegation</a> of <b>{amount.SuiToString()}</b> to {ua.Link} from <a href='{Explorer.FromId(ua.User.Explorer).account(delegator)}'>{fromName}</a>";
+                                $"🤝 New <a href='{Explorer.FromId(ua.User.Explorer).op(tx)}'>delegation</a> of <b>{stakedAmount.SuiToString()}</b> to {ua.Link} from <a href='{Explorer.FromId(ua.User.Explorer).account(delegator)}'>{fromName}</a>";
 
                             if (!ua.User.HideHashTags)
                                 result += "\n\n#delegation" + ua.HashTag();
@@ -174,8 +180,12 @@ namespace SuiNotifierBot
                         }
                     }
 				}
-                if (receivers.Count == 0 || sender == null)
+                if (receivers.Count == 0 && sender == "")
                     continue;
+                if (receivers.Count == 0)
+				{
+                    txs.Add((sender, "", tx), amount);
+                }                
                 foreach (var receiver in receivers)
                 {
                     if (!txs.ContainsKey((sender, receiver.Item1, tx)))
@@ -184,10 +194,14 @@ namespace SuiNotifierBot
                         txs[(sender, receiver.Item1, tx)] = (txs[(sender, receiver.Item1, tx)] + receiver.Item2);
                 }
             }
-            if (txs.Count == 0)
-                return;
+            
+            foreach(var tx in txs.Keys.ToList())
+			{
+                if (!db.UserAddress.Any(x => !x.User.Inactive && x.NotifyTransactions && (tx.from == x.Address || tx.to == x.Address)))
+                    txs.Remove(tx);
+            }
 
-            if (!db.UserAddress.Any(x => x.NotifyTransactions && (txs.Keys.Select(o => o.from).Contains(x.Address) || txs.Keys.Select(o => o.to).Contains(x.Address))))
+            if (txs.Count == 0)
                 return;
 
             var rq1 = txs.Select(o => o.Key.to).Union(txs.Select(o => o.Key.from)).Distinct().Select(async o => { return await rpc.GetSuiBalance(o); }).Select(o => o.Result);
@@ -197,7 +211,7 @@ namespace SuiNotifierBot
                 Console.WriteLine($"{balance.addr}: {balance.balance} SUI");
             }            
 
-            var fromList = txs.GroupBy(o => o.Key.to).ToList();
+            var fromList = txs.Where(o => o.Key.to != "").GroupBy(o => o.Key.to).ToList();
             foreach (var to in fromList)
             {
                 var to_addr = db.UserAddress.Include(x => x.User).Where(x => x.Address == to.Key && x.NotifyTransactions && !x.User.Inactive).ToList();
@@ -209,18 +223,23 @@ namespace SuiNotifierBot
                     var items = new List<(string addr, string name, string hash, string tx, decimal value)>();
                     foreach (var from in to)
                     {
-                        var fromName = (db.UserAddress.FirstOrDefault(o => o.Address == from.Key.from && o.UserId == ua.UserId)?.Title ?? db.PublicAddress.SingleOrDefault(o => o.Address == from.Key.from)?.Title);
-                        string fromTag;
-                        if (fromName == null)
+                        if (from.Key.from != "")
                         {
-                            fromName = from.Key.from.ShortAddr();
-                            fromTag = from.Key.from.HashTag();
+                            var fromName = (db.UserAddress.FirstOrDefault(o => o.Address == from.Key.from && o.UserId == ua.UserId)?.Title ?? db.PublicAddress.SingleOrDefault(o => o.Address == from.Key.from)?.Title);
+                            string fromTag;
+                            if (fromName == null)
+                            {
+                                fromName = from.Key.from.ShortAddr();
+                                fromTag = from.Key.from.HashTag();
+                            }
+                            else
+                                fromTag = " #" + System.Text.RegularExpressions.Regex.Replace(fromName.ToLower(), "[^a-zа-я0-9]", "");
+                            items.Add((from.Key.from, fromName, fromTag, from.Key.tx, from.Value));
                         }
                         else
-                            fromTag = " #" + System.Text.RegularExpressions.Regex.Replace(fromName.ToLower(), "[^a-zа-я0-9]", "");
-                        items.Add((from.Key.from, fromName, fromTag, from.Key.tx, from.Value));
-                    }
-                    foreach(var item in items)
+                            items.Add(("", "", "", from.Key.tx, from.Value));
+					}
+					foreach (var item in items.Where(o => o.addr != ""))
 					{
                         string result =
                             $"✅ Incoming <a href='{Explorer.FromId(ua.User.Explorer).op(item.tx)}'>transaction</a> of <b>{item.value.SuiToString()}</b> to {ua.Link} from <a href='{Explorer.FromId(ua.User.Explorer).account(item.addr)}'>{item.name}</a>";
@@ -230,20 +249,21 @@ namespace SuiNotifierBot
                             result += "\n\n#incoming" + ua.HashTag() + item.hash;
                         await messageSender.SendMessage(ua.UserId, result, ReplyKeyboards.MainMenu);
                     }
-     //               else
-					//{
-     //                   
-     //                   
-     //                   while (items.Count > 0)
-					//	{
-     //                       items.RemoveAt(0);
-					//	}
-     //                   string result = 
-     //               }
+                    
+                    var depositAmount = items.Where(o => o.addr == "").Sum(o => o.value);
+                    if (depositAmount != 0)
+					{
+                        string result = $"🔸 Incoming <a href='{Explorer.FromId(ua.User.Explorer).op(items[0].tx)}'>transaction</a> of {depositAmount.SuiToString()} to {ua.Link}";
+
+                        result += "\n\n<b>Balance</b>: " + balances[to.Key].balance.SuiToString();
+                        if (!ua.User.HideHashTags)
+                            result += "\n\n#incoming" + ua.HashTag();
+                        await messageSender.SendMessage(ua.UserId, result, ReplyKeyboards.MainMenu);
+                    }
                 }                
             }
 
-            var toList = txs.GroupBy(o => o.Key.from).ToList();
+            var toList = txs.Where(o => o.Key.from != null).GroupBy(o => o.Key.from).ToList();
             foreach (var from in toList)
             {
                 var from_addr = db.UserAddress.Include(x => x.User).Where(x => x.Address == from.Key && x.NotifyTransactions && !x.User.Inactive).ToList();
@@ -255,20 +275,25 @@ namespace SuiNotifierBot
                     var items = new List<(string addr, string name, string hash, string tx, decimal value)>();
                     foreach (var to in from)
                     {
-                        var toName = (db.UserAddress.FirstOrDefault(o => o.Address == to.Key.to && o.UserId == ua.UserId)?.Title ?? db.PublicAddress.SingleOrDefault(o => o.Address == to.Key.to)?.Title);
-                        string toTag;
-                        if (toName == null)
+                        if (to.Key.to != "")
                         {
-                            toName = to.Key.to.ShortAddr();
-                            toTag = to.Key.to.HashTag();
+                            var toName = (db.UserAddress.FirstOrDefault(o => o.Address == to.Key.to && o.UserId == ua.UserId)?.Title ?? db.PublicAddress.SingleOrDefault(o => o.Address == to.Key.to)?.Title);
+                            string toTag;
+                            if (toName == null)
+                            {
+                                toName = to.Key.to.ShortAddr();
+                                toTag = to.Key.to.HashTag();
+                            }
+                            else
+                                toTag = " #" + System.Text.RegularExpressions.Regex.Replace(toName.ToLower(), "[^a-zа-я0-9]", "");
+                            if (ua.User.HideHashTags)
+                                toTag = "";
+                            items.Add((to.Key.to, toName, toTag, to.Key.tx, to.Value));
                         }
                         else
-                            toTag = " #" + System.Text.RegularExpressions.Regex.Replace(toName.ToLower(), "[^a-zа-я0-9]", "");
-                        if (ua.User.HideHashTags)
-                            toTag = "";
-                        items.Add((to.Key.to, toName, toTag, to.Key.tx, to.Value));
+                            items.Add(("", "", "", to.Key.tx, to.Value));
                     }
-                    if (items.Count == 1)
+                    if (items.Count == 1 && items[0].addr != "")
                     {
                         string result = $"❎ Outgoing <a href='{Explorer.FromId(ua.User.Explorer).op(items[0].tx)}'>transaction</a> of <b>{items[0].value.SuiToString()}</b> from {ua.Link} to <a href='{Explorer.FromId(ua.User.Explorer).account(items[0].addr)}'>{items[0].name}</a>";
                         result += "\n\n<b>Balance</b>: " + balances[from.Key].balance.SuiToString();
@@ -276,14 +301,14 @@ namespace SuiNotifierBot
                             result += "\n\n#outgoing" + ua.HashTag() + items[0].hash;
                         await messageSender.SendMessage(ua.UserId, result, ReplyKeyboards.MainMenu);
                     }
-                    else
+                    else if (items.Count(o => o.addr != "") > 0)
                     {
                         items.Sort((i1, i2) => i1.value < i2.value ? 1 : i1.value > i2.value ? -1 : 0);
                         string header = $"❎ Outgoing <a href='{Explorer.FromId(ua.User.Explorer).op(items.First().tx)}'>transactions</a> of <b>{items.Sum(i => i.value).SuiToString()}</b> from " + ua.Link + ":\n";
                         string itemsList = "";
                         string tagList = !ua.User.HideHashTags ? "\n\n#outgoing" + ua.HashTag() : "";
                         string balance = "\n<b>Balance</b>: " + balances[from.Key].balance.SuiToString();
-                        while (items.Count > 0)
+                        while (items.Count(o => o.addr != "") > 0)
                         {
                             var item = $"▫️<b>{items[0].value.SuiToString()}</b> to <a href='{Explorer.FromId(ua.User.Explorer).account(items[0].addr)}'>{items[0].name}</a>\n";
                             if ((header + itemsList + balance + item + tagList).Length > 4000)
@@ -301,6 +326,19 @@ namespace SuiNotifierBot
                         if (itemsList.Length > 0)
                         {
                             string result = header + itemsList + balance + tagList;
+                            await messageSender.SendMessage(ua.UserId, result, ReplyKeyboards.MainMenu);
+                        }
+                    }
+                    else if (items.Count(o => o.addr == "") > 0)
+                    {
+                        var withdrawalAmount = -items.Where(o => o.addr == "").Sum(o => o.value);
+                        if (withdrawalAmount != 0)
+                        {
+                            string result = $"🔹 Outgoing <a href='{Explorer.FromId(ua.User.Explorer).op(items[0].tx)}'>transaction</a> of {withdrawalAmount.SuiToString()} from {ua.Link}";
+
+                            result += "\n\n<b>Balance</b>: " + balances[from.Key].balance.SuiToString();
+                            if (!ua.User.HideHashTags)
+                                result += "\n\n#outgoing" + ua.HashTag();
                             await messageSender.SendMessage(ua.UserId, result, ReplyKeyboards.MainMenu);
                         }
                     }
@@ -555,6 +593,7 @@ namespace SuiNotifierBot
                         if (ua != null)
                         {
                             ua.Title = messageText;
+                            await messageSender.SendMessage(chatId, "Address renamed", ReplyKeyboards.MainMenu);
                             await messageSender.SendMessage(chatId, getAddressText(ua, rpc, false, false), ReplyKeyboards.ViewAddressMenu(ua));
                         }
                     }
@@ -714,7 +753,8 @@ With Sui Notifier Bot you can easily monitor various events in Sui blockchain, l
                     foreach (var st in s.stakes)
                     { 
                         stake += ((string)st.principal).ParseSui();
-                        reward += ((string)st.estimatedReward).ParseSui();
+                        if (st.estimatedReward != null)
+                            reward += ((string)st.estimatedReward).ParseSui();
                     }
                     stakes.Add((stake, reward, s.validatorAddress));
                 }
@@ -727,8 +767,11 @@ With Sui Notifier Bot you can easily monitor various events in Sui blockchain, l
                         result += $"\n";
                         foreach (var s in stakes)
                         {
-                            var sv = validators[s.Item3];
-                            result += $"\n🗃 <a href='{Explorer.FromId(ua.User.Explorer).account(sv.Address)}'>{sv.Title}</a>: {s.Item1.SuiToString()} (earned {s.Item2.SuiToString()})";
+                            if (validators[s.Item3] != null)
+                            {
+                                var sv = validators[s.Item3];
+                                result += $"\n🗃 <a href='{Explorer.FromId(ua.User.Explorer).account(sv.Address)}'>{sv.Title}</a>: {s.Item1.SuiToString()} (earned {s.Item2.SuiToString()})";
+                            }
                         }
                     }
                 }

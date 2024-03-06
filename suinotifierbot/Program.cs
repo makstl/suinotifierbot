@@ -20,7 +20,8 @@ IHostBuilder CreateHostBuilder(string[] args) =>
                 builder.AddCommandLine(args);
             })
             .ConfigureServices((context, services) => {
-                services.Configure<TelegramOptions>(context.Configuration.GetSection("Telegram"));
+				services.Configure<HostOptions>(hostOptions => hostOptions.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
+				services.Configure<TelegramOptions>(context.Configuration.GetSection("Telegram"));
                 {
                     var db = new Model.BotDbContext();
                     //db.Database.EnsureCreated();
