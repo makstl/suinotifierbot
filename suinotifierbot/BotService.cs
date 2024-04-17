@@ -207,6 +207,8 @@ namespace SuiNotifierBot
             var rq1 = txs.Select(o => o.Key.to).Union(txs.Select(o => o.Key.from)).Distinct().Select(async o => { return await rpc.GetSuiBalance(o); }).Select(o => o.Result);
             foreach (var balance in rq1)
             {
+                if (balance.addr == null)
+                    continue;
                 balances[balance.addr] = balance;
                 Console.WriteLine($"{balance.addr}: {balance.balance} SUI");
             }            
@@ -275,7 +277,7 @@ namespace SuiNotifierBot
                     var items = new List<(string addr, string name, string hash, string tx, decimal value)>();
                     foreach (var to in from)
                     {
-                        if (to.Key.to != "")
+                        if (to.Key.to != "" && to.Key.to != null)
                         {
                             var toName = (db.UserAddress.FirstOrDefault(o => o.Address == to.Key.to && o.UserId == ua.UserId)?.Title ?? db.PublicAddress.SingleOrDefault(o => o.Address == to.Key.to)?.Title);
                             string toTag;
